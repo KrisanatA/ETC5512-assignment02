@@ -1,0 +1,554 @@
+---
+title: "Labor's campaign strategy in Victoria"
+subtitle: ETC5512 Assignment 2, Master of Business Analytics
+author: Prepared by Krisanat Anukarnsakulchularp, 29803829, kanu0003@student.monash.edu 
+date: '`r Sys.Date()`'
+output: 
+  html_document:
+    css: monashreport.css
+    includes:
+      before_body: header.html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      messages = FALSE, 
+                      warning = FALSE,
+                      fig.align = "center")
+library(tidyverse)
+library(sf)
+library(kableExtra)
+library(patchwork)
+```
+
+# 🔨 Introduction
+
+The 2022 Australian federal election will be held on or before 21 May 2022. With the upcoming election, The Victorian Labor party are looking to formulate a campaign strategy. In this report we will be looking to identified information that will be useful for the Victorian Labor party to create a election strategy. Hon Tanya Plibersek MP, the Shadow Minister for Education and for Women, specifically interested in **Macnamara**, **Hotham**, **Melbourne**, **Higgins**, **Chisholm**, and **Goldstein**
+
+# 🔍 Analysis
+
+## Q1: Labor electorates in Victoria
+
+```{r readelection, results = 'hide'}
+# Read voting data
+election2019 <- read_csv("https://results.aec.gov.au/24310/Website/Downloads/HouseDopByDivisionDownload-24310.csv",
+                         skip = 1, col_types = cols()) %>%
+  mutate(DivisionNm = toupper(DivisionNm))
+```
+
+```{r extract_labor_electorates}
+# Extract Labor electorates
+labor_election2019 <- election2019 %>%
+  filter(Elected == "Y" & CountNumber == 0 & CalculationType == "Preference Count",
+         PartyAb == "ALP",
+         StateAb == "VIC")
+
+labor_electorate <- labor_election2019 %>%
+  pull(DivisionNm)
+
+labor_electorate
+```
+
+## Q2: Median household income
+
+```{r read_data, results = 'hides'}
+# Census data
+sa1_HIHC <- read_sf(here::here("data/Geopackage_2016_HIHC_for_VIC/census2016_hihc_vic_short.gpkg"), 
+               layer = "census2016_hihc_vic_sa1_short") %>%
+  st_zm(drop = TRUE)
+
+# Federal electoral boundary GIS data
+vic_map <- read_sf(here::here("data/vic-july-2018-esri/E_AUGFN3_region.shp")) %>%
+  mutate(DivisionNm = toupper(Elect_div)) %>%
+  st_zm(drop = TRUE)
+```
+
+```{r median_function}
+# Median household income function
+med_hhd_inc <- function(division){
+  
+  x <- division
+  
+  electorate <- vic_map %>%
+    filter(DivisionNm == x)
+  
+  sa1_intersect <- sa1_HIHC %>%
+    filter(st_intersects(geom,
+                         electorate$geometry,
+                         sparse = FALSE)[,1])
+  
+  sa1_intersect2 <- sa1_intersect %>%
+    mutate(geometry = st_intersection(geom,
+                                      electorate$geometry),
+           perc_area = 100 * st_area(geometry) / st_area(geometry),
+           perc_area = as.numeric(perc_area)) %>%
+    filter(perc_area > 5)
+  
+  sa1_intersect3 <- sa1_intersect2 %>%
+     filter(Median_tot_hhd_inc_weekly != 0)
+   
+  med <- weighted.mean(sa1_intersect3$Median_tot_hhd_inc_weekly, sa1_intersect3$perc_area)
+  
+  return(med)
+}
+
+# Income data map function
+map <- function(division){
+  
+  x <- division
+  
+  electorate <- vic_map %>%
+    filter(DivisionNm == x)
+  
+  sa1_intersect <- sa1_HIHC %>%
+    filter(st_intersects(geom,
+                         electorate$geometry,
+                         sparse = FALSE)[,1])
+  
+  sa1_intersect2 <- sa1_intersect %>%
+    mutate(geometry = st_intersection(geom,
+                                      electorate$geometry),
+           perc_area = 100 * st_area(geometry) / st_area(geom),
+           perc_area = as.numeric(perc_area)) %>%
+    filter(perc_area > 5)
+  
+  sa1_intersect3 <- sa1_intersect2 %>%
+     filter(Median_tot_hhd_inc_weekly != 0)
+
+  ggplot(sa1_intersect3) +
+    geom_sf(color = "red", 
+            aes(fill = Median_tot_hhd_inc_weekly,
+                geometry = geom)) +       
+    geom_sf(data = electorate, color = "black",
+            fill = "transparent",
+            aes(geometry = geometry)) +
+    theme(legend.position = "bottom") +
+    ggtitle(x)
+}
+```
+
+```{r hotham_map}
+# Check the region that has 0 Median household income
+map("HOTHAM")
+```
+
+```{r calculate_hhd}
+# Median household income for each electorate
+median_hhd_income <- tibble(electorate = labor_electorate) %>%
+  group_by(electorate) %>%
+  mutate(Median_household_income = med_hhd_inc(electorate)) 
+
+median_hhd_income <- median_hhd_income %>%
+  arrange(Median_household_income)
+
+median_hhd_income[1:5,] %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+1.  Downloaded the data sets, one from the [https://www.abs.gov.au/census/find-census-data/geopackages](Australian Bureau of Statistics), and another one from the [https://www.aec.gov.au/electorates/gis/licence.htm](Australian Electoral Commission), this gives us a census data and the federal electoral boundary.
+
+2.  Read data from the data folder, using the *read_sf()* function to read simple features data from the file. With the census data, we will be using the sa1 region, the reason for this is because sa1 will give us a small sample of people where it will have less effect if the majority of the region is out of the 2019 electoral boundaries.
+
+3.  Once reading data from both files, we then need to project the census data into a 2019 electoral district. This is because the census data contains only the information on the 2016 electorate boundaries, which differ from the 2019 electoral boundaries. We can do this using the *st_intersects* and *st_intersection*. With the *st_intersects*, it will also include the regions that only touch the boundaries, which could make our estimate inaccurate. The *st_intersection* can help with this problem by using the mutate function to calculate the percentage area where the region in the census data intersects with the 2019 electoral boundaries. Then we can specify that the percentage area has to be greater than our threshold for it to be included in our calculation.
+
+4.  In our census data, we can see that there is some region that has the median household income equal to zero, which makes little sense. Looking at the intersection map and comparing it with google maps, we can see that the region that has zero is a region where there is no household living in that region. We will filter out the region that has a median household income equal to zero.
+
+5.  Using the *weighted.mean()* function we can use the percentage area that the census region intersects with the boundaries and Median household income to calculate the Median household income for all the electorate that the **Labor Party** has won.
+
+## Q3: Ratio of median household income to median rent
+
+```{r ratio}
+# Calculate ratio of median household income to median rent
+sa1_HIHC <- sa1_HIHC %>%
+  mutate(inc_rent = Median_tot_hhd_inc_weekly/Median_rent_weekly)
+```
+
+```{r ratio_function}
+# Ratio Median household income to median rent function
+med_hhd_inc_ratio <- function(division){
+  
+  x <- division
+  
+  electorate <- vic_map %>%
+    filter(DivisionNm == x)
+  
+  sa1_intersect <- sa1_HIHC %>%
+    filter(st_intersects(geom,
+                         electorate$geometry,
+                         sparse = FALSE)[,1])
+  
+  sa1_intersect2 <- sa1_intersect %>%
+    mutate(geometry = st_intersection(geom,
+                                      electorate$geometry),
+           perc_area = 100 * st_area(geometry) / st_area(geometry),
+           perc_area = as.numeric(perc_area)) %>%
+    filter(perc_area > 5)
+  
+  sa1_intersect3 <- sa1_intersect2 %>%
+    filter(inc_rent != 0)
+  
+  med <- fivenum(sa1_intersect3$inc_rent)[3]
+  
+  return(med)
+}
+```
+
+```{r calculated_ratio}
+# Ration median household income to median rent for each electorate
+median_income_rent_ratio <- tibble(electorate = labor_electorate) %>%
+  group_by(electorate) %>%
+  mutate(income_rent_ratio  = med_hhd_inc_ratio(electorate)) 
+
+median_income_rent_ratio <- median_income_rent_ratio %>%
+  arrange(income_rent_ratio)
+
+median_income_rent_ratio[1:5,] %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+```{r selected_hhd_income}
+median_hhd_income %>%
+  filter(electorate %in% c("HOTHAM", "BRUCE", "CALWELL", "FRASER", "SCULLIN")) %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+The 5 lowest ratios of median household income to median rent are **HOTHAM**, **BRUCE**, **CALWELL**, **FRASER**, **SCULLIN** these electorates. 
+
+##### Campaign strategy
+
+- Rent
+
+  - Victorian Labor party could propose to increase the budget on the NRAS (National Rental Affordability Scheme), which is the government scheme to increase the supply of the housing while reducing the rental costs for low to moderate-income households. This will help the low and mid-income households to afford a lower rental price for the property.
+
+- Wages
+
+  - Victorian Labor party could propose to increase the national minimum wages, as increasing the minimum wages will also help the lower-income household to able to afford a better rental property.
+
+##### Recommendation
+
+If we look at the median income for these 5 electorates, we can see that the reason for these 5 lowest ratios is not because of wages, so the rent campaign would be more effective.
+
+##### Limitation
+
+Things to note is that this data is from the 2016 census data, which is 3 years ago compared to the 2019 electoral boundaries where the boundaries are different for some electorates. This could lead to some inaccurate estimates, as it is hard to get the exact intersection from the census data to the electoral boundaries in 2019. Also, given that the data is collected 6 years ago, the census data may not represent the population now as of 2022, where the median income could increase or decrease and rent could now change over time due to the inflation.
+
+## Q4: Population
+
+```{r readpop}
+# Read population data from census
+sa1_SPCA <- read_sf(here::here("data/Geopackage_2016_SPCA_for_VIC/census2016_spca_vic_short.gpkg"), 
+                  layer = "census2016_spca_vic_sa1_short") %>%
+  st_zm(drop = TRUE) %>%
+  mutate(total_pop = Tot_M + Tot_F)
+```
+
+```{r popfunction}
+# Total population function
+tot_pop <- function(division){
+  
+  x <- division
+  
+  electorate <- vic_map %>%
+    filter(DivisionNm == x)
+  
+  sa1_intersect <- sa1_SPCA %>%
+    filter(st_intersects(geom,
+                         electorate$geometry,
+                         sparse = FALSE)[,1])
+  
+  sa1_intersect2 <- sa1_intersect %>%
+    mutate(geometry = st_intersection(geom,
+                                      electorate$geometry),
+           perc_area = 100 * st_area(geometry) / st_area(geom),
+           perc_area = as.numeric(perc_area)) %>%
+    filter(perc_area > 10)
+  
+  sum <- sum(sa1_intersect2$total_pop)
+  
+  return(sum)
+}
+
+# Total population map function
+tot_pop_map <- function(division){
+  
+  x <- division
+  
+  electorate <- vic_map %>%
+    filter(DivisionNm == x)
+  
+  sa1_intersect <- sa1_SPCA %>%
+    filter(st_intersects(geom,
+                         electorate$geometry,
+                         sparse = FALSE)[,1])
+  
+  sa1_intersect2 <- sa1_intersect %>%
+    mutate(geometry = st_intersection(geom,
+                                      electorate$geometry),
+           perc_area = 100 * st_area(geometry) / st_area(geom),
+           perc_area = as.numeric(perc_area)) %>%
+    filter(perc_area > 10)
+  
+  sa1_intersect3 <- sa1_intersect2 %>%
+    filter(total_pop != 0)
+  
+  ggplot(sa1_intersect3) +
+    geom_sf(color = "red", 
+            aes(fill = total_pop,
+                geometry = geom)) +       
+    geom_sf(data = electorate, color = "black",
+            fill = "transparent",
+            aes(geometry = geometry)) +
+    theme(legend.position = "bottom",
+          axis.title = element_text(size = 20),
+          axis.title.y = element_text(size = 20),
+          axis.title.x = element_text(size = 20)) +
+    ggtitle(x)
+}
+```
+
+```{r drawmap}
+# Look at the intersect maps to see if there is anything wrong
+tot_pop_map("MACNAMARA")
+tot_pop_map("HOTHAM")
+tot_pop_map("MELBOURNE")
+tot_pop_map("HIGGINS")
+tot_pop_map("CHISHOLM")
+tot_pop_map("GOLDSTEIN")
+```
+
+```{r calculated_tot_pop}
+# Calculate the total population for each electoral division of interest
+electorate_int <- c("MACNAMARA", "HOTHAM", "MELBOURNE", "HIGGINS", "CHISHOLM", "GOLDSTEIN")
+
+pop <- tibble(electorate = electorate_int) %>%
+  group_by(electorate) %>%
+  mutate(Total_population  = tot_pop(electorate)) 
+
+pop %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+From the map we can see that there are still some census regions that are out of 2019 federal electoral boundaries, however, this may not be much of a concern for us. If we look at the region that is out of boundaries their population size is not that big so it should not affect our estimates that much.
+
+## Q5: Age Distribution
+
+```{r clean_function}
+# Create extract data that are intersect with the boundary function
+extract_intersect <- function(division){
+  
+  x <- division
+  
+  electorate <- vic_map %>%
+    filter(DivisionNm == x)
+  
+  sa1_intersect <- sa1_SPCA %>%
+    filter(st_intersects(geom,
+                         electorate$geometry,
+                         sparse = FALSE)[,1])
+  
+  sa1_intersect2 <- sa1_intersect %>%
+    mutate(geometry = st_intersection(geom,
+                                      electorate$geometry),
+           perc_area = 100 * st_area(geometry) / st_area(geometry),
+           perc_area = as.numeric(perc_area)) %>%
+    filter(perc_area > 5)  
+}
+
+# Create clean age function
+age_clean_data <- function(division){
+  
+  x <- division
+  
+  df <- extract_intersect(x) %>%
+    st_set_geometry(NULL) %>%
+    select(sa1_7digitcode_2016, Age_yr_0_M:Age_yr_79_P) %>%
+    pivot_longer(-sa1_7digitcode_2016,
+                 names_to = "category",
+                 values_to = "count") %>%
+    filter(!str_detect(category, "([A-Za-z])_yr_(\\d+)_(\\d+)_([A-Za-z])"),
+           !str_detect(category, "([A-Za-z])_yr_(\\d+)_P")) %>%
+    extract(category, c("age", "sex"),
+            "Age_yr_(\\d+)_([MF])") %>%
+    mutate(max = age)
+  
+  df2 <- extract_intersect(x) %>%
+     st_set_geometry(NULL) %>%
+    select(sa1_7digitcode_2016, Age_yr_80_84_M:Age_yr_100_yr_over_P) %>%
+    pivot_longer(-sa1_7digitcode_2016,
+                 names_to = "category",
+                 values_to = "count") %>%
+    filter(!str_detect(category, "([A-Za-z])_yr_(\\d+)_(\\d+)_P"),
+           !str_detect(category, "([A-Za-z])_yr_(\\d+)_yr_over_P")) %>%
+    mutate(category = str_replace(category, "_yr_over", "_100")) %>%
+    extract(category, c("age", "max", "sex"),
+            "Age_yr_(\\d+)_(\\d+)_([MF])") %>%
+    mutate(max = ifelse(max == 100, Inf, max),
+           age = ifelse(age == max, max, paste0(age, "-", max)))
+    
+  df_all <- rbind(df, df2) %>%
+    arrange(sa1_7digitcode_2016) %>%
+    mutate(electorate = x,
+           electorate = as.factor(electorate),
+           max = as.numeric(max),
+           age = fct_reorder(age, max))
+}
+```
+
+```{r plot, fig.height = 10}
+# Clean data
+chisholm_age_clean <- age_clean_data("CHISHOLM")
+goldstein_age_clean <- age_clean_data("GOLDSTEIN")
+higgins_age_clean <- age_clean_data("HIGGINS")
+hotham_age_clean <- age_clean_data("HOTHAM")
+macnamara_age_clean <- age_clean_data("MACNAMARA")
+melbourne_age_clean <- age_clean_data("MELBOURNE")
+
+all_age_clean <- rbind(chisholm_age_clean, goldstein_age_clean, higgins_age_clean, hotham_age_clean, macnamara_age_clean, melbourne_age_clean)
+
+# Plot the distribution
+all_age_clean <- all_age_clean %>%
+  group_by(electorate) %>%
+  mutate(total = sum(count))
+
+all_age_clean %>%
+  group_by(age, electorate) %>%
+  summarise(percentage = (sum(count) / total) * 100,
+            .groups = "drop") %>%
+  ggplot() + 
+  geom_col(aes(x = age, y = percentage), position = "dodge") +
+  facet_wrap(~electorate, ncol = 1, scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(y = "Percentage", x = 'Age (in years)', title = 'Age Distribution')
+```
+
+##### a. 
+There are a peak at the right of the graph, this is because for the age up to 79 it is a discrete variable where the variable only contains 1 specific age, while after the age of 79 the age is a categorical variable where it contains multiple ages in the same variable. Therefore, each categorical variable is the sum of people who are in that age range.
+
+##### b. 
+  - Both **Hotham** and **Melbourne** distribution is positive skew, which indicates that younger people are living in this area. The possible reason could be that both electorates contain university campus, and student tends to live near campus for easy transportation [https://www.studying-in-australia.org/international-student-in-australia-statistics/]((https://www.studying-in-australia.org/international-student-in-australia-statistics/)).
+
+  - **Melbourne** has a high percentage of people aged from 20 - 40, the reason for this is that Melbourne electorate is the center of Victoria where a lot of company are in that area so there is a lot of working people living in this electorate.
+
+  - For **Goldstein** we can see that the median age is quite higher compared to other electorates, this could be because the electorate has a public park, walking
+tracks and public transport which make it an ideal place for older people to live [https://www.voicesofgoldstein.org.au/some_facts_about_the_electorate_of_goldstein]((https://www.voicesofgoldstein.org.au/some_facts_about_the_electorate_of_goldstein)).
+
+
+## Q6: Australian Citizen
+
+```{r aus_citi_function}
+# Create Australian citizen extract function
+aus_citizen <- function(division) {
+  
+  x <- division
+  
+  df <- extract_intersect(x) %>%
+    st_set_geometry(NULL) %>%
+    select(sa1_7digitcode_2016, australian_citizen) %>%
+    mutate(electorate = x,
+           electorate = as.character(electorate))
+}
+```
+
+```{r calculated_aus_citi}
+# Clean data
+sa1_SPCA <- sa1_SPCA %>%
+  mutate(australian_citizen = Australian_citizen_M + Australian_citizen_F)
+
+chisholm_ac <- aus_citizen("CHISHOLM")
+goldstein_ac <- aus_citizen("GOLDSTEIN")
+higgins_ac <- aus_citizen("HIGGINS")
+hotham_ac <- aus_citizen("HOTHAM")
+macnamara_ac <- aus_citizen("MACNAMARA")
+melbourne_ac <- aus_citizen("MELBOURNE")
+
+all_ac <- rbind(chisholm_ac, goldstein_ac, higgins_ac, hotham_ac, macnamara_ac, melbourne_ac)
+
+all_ac_1 <- all_ac %>%
+  group_by(electorate) %>%
+  summarise(total_australian = sum(australian_citizen), .groups = "drop")
+
+all_ac_2 <- pop %>%
+  group_by(electorate) %>%
+  right_join(all_ac_1,
+             by = "electorate") %>%
+  summarise(australian_citizen_percentage = total_australian / Total_population)
+
+all_ac_2 %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+**Hotham**, **Macnamara**, and **Melbourne** electorate, there is a university campus in each electorate, what this means is that there will be an international student enrolled on the campus and international students will live around that for an easy commute [https://www.studying-in-australia.org/international-student-in-australia-statistics/]((https://www.studying-in-australia.org/international-student-in-australia-statistics/)).
+
+## Q7: Adult Australian citizen
+
+```{r calc_adult_aus_citi}
+adult_pop <- all_age_clean %>%
+  filter(max >= 18) %>%
+  group_by(electorate) %>%
+  summarise(adultpop = sum(count))
+
+adult_aus_pop <- adult_pop %>%
+  right_join(all_ac_2,
+             by = "electorate")
+
+adult_aus_pop %>%
+  group_by(electorate) %>%
+  summarise(australian_adult = ceiling(adultpop * australian_citizen_percentage)) %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+This calculation is calculated based on the assumption that the proportion of the Australian citizen is the same for all age.
+
+## Q8: Data Used
+
+- 2019 election results: Downloaded from the website [https://results.aec.gov.au/24310/Website/HouseDefault-24310.htm](Australian Electoral Commission)
+- Household Income and Rent cost: **Geopackage_2016_HIHC_for_VIC** (Topic: Household Income and Housing Costs)
+- Total Population, Age distribution, Australian Citizen: **Geopackage_2016_SPCA_for_VIC** (Topic: Selected Person Characteristics, Geopackage: A)
+- 2019 Federal electoral boundaries: **vic-july-2018-esri**
+
+## 📄 Resources
+
+Australian Electoral Commission. (2019, July 11). 2019 Federal Election - AEC Tally Room. Australian Electoral Commission. 
+  https://results.aec.gov.au/24310/Website/HouseDefault-24310.htm
+
+Census GeoPackages | Australian Bureau of Statistics. (n.d.). www.abs.gov.au. Retrieved April 20, 2022, 
+  from https://www.abs.gov.au/census/find-census-data/geopackages
+  
+corporateName=Australian Electoral Commission; address=10 Mort Street, C. A. 2600; contact=13 23 26. (n.d.). 
+  Federal electoral boundary GIS data for free download. Australian Electoral Commission. Retrieved April 20, 2022, 
+  from https://aec.gov.au/Electorates/gis/gis_datadownload.htm
+
+Electorates A-Z. (n.d.). Abc.net.au. Retrieved April 20, 2022, from https://www.abc.net.au/news/elections/federal/2022/guide/electorates
+
+Hao Zhu (2021). kableExtra: Construct Complex Table with 'kable' and Pipe Syntax. R package version 1.3.4.
+  https://CRAN.R-project.org/package=kableExtra
+
+International Student in Australia Statistics. (2019, December 13). Study Abroad in Australia. 
+  https://www.studying-in-australia.org/international-student-in-australia-statistics/
+
+National Rental Affordability Scheme | Department of Social Services, Australian Government. (n.d.). Www.dss.gov.au. 
+  https://www.dss.gov.au/our-responsibilities/housing-support/programmes-services/national-rental-affordability-scheme
+
+Pebesma, E., 2018. Simple Features for R: Standardized Support for Spatial Vector Data. The R Journal 10 (1), 439-446,
+  https://doi.org/10.32614/RJ-2018-009
+  
+Some interesting facts about the electorate of Goldstein. (n.d.). Voices of Goldstein. Retrieved April 20, 2022, from 
+  https://www.voicesofgoldstein.org.au/some_facts_about_the_electorate_of_goldstein
+
+Thomas Lin Pedersen (2020). patchwork: The Composer of Plots. R package version 1.1.1. https://CRAN.R-project.org/package=patchwork
+
+Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
+
+
+The following are the OS system and R-packages used in this report:
+
+```{r}
+library(sessioninfo)
+sessioninfo::session_info()
+```
